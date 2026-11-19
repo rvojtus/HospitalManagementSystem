@@ -1,0 +1,236 @@
+-- Scenario for HospitalManagement.use
+-- Part A builds a valid state. Part B applies deliberate violations.
+-- Run:  use -nogui -nr HospitalManagement.use scenario.soil
+
+------------------------------------------------------------
+-- Part A: valid state
+------------------------------------------------------------
+!create icu : Ward
+!icu.name := 'ICU'
+!icu.capacity := 2
+!icu.minDayStaff := 2
+!icu.minNightNurses := 1
+!icu.requiredSpecialty := ''
+
+!create surgeon1 : Surgeon
+!surgeon1.name := 'Dr. Novak'
+!surgeon1.active := true
+!surgeon1.clearance := Clearance::CLINICAL
+!surgeon1.specialty := 'Cardiac surgery'
+!surgeon1.robotCertified := true
+
+!create doc2 : Physician
+!doc2.name := 'Dr. Svoboda'
+!doc2.active := true
+!doc2.clearance := Clearance::CLINICAL
+!doc2.specialty := 'Internal medicine'
+
+!create nurse1 : Nurse
+!nurse1.name := 'Nurse Kral'
+!nurse1.active := true
+!nurse1.clearance := Clearance::CLINICAL
+
+!create cleaner1 : Cleaner
+!cleaner1.name := 'Mr. Dvorak'
+!cleaner1.active := true
+!cleaner1.clearance := Clearance::NONE
+
+-- Day shift (>= 2 active staff) and night shift (>= 1 nurse, >= 1 physician)
+!create dayShift : Shift
+!dayShift.day := 1
+!dayShift.type := ShiftType::DAY
+!insert (icu, dayShift) into WardShift
+!insert (dayShift, surgeon1) into ShiftStaff
+!insert (dayShift, cleaner1) into ShiftStaff
+
+!create nightShift : Shift
+!nightShift.day := 1
+!nightShift.type := ShiftType::NIGHT
+!insert (icu, nightShift) into WardShift
+!insert (nightShift, nurse1) into ShiftStaff
+!insert (nightShift, doc2) into ShiftStaff
+
+-- Emergency room with a night shift (needs a physician and a surgeon)
+!create er : EmergencyRoom
+!er.name := 'Emergency Room'
+!er.capacity := 10
+!er.minDayStaff := 3
+!er.minNightNurses := 2
+!er.requiredSpecialty := ''
+!er.triageCapacity := 4
+
+!create surgeon2 : Surgeon
+!surgeon2.name := 'Dr. Horak'
+!surgeon2.active := true
+!surgeon2.clearance := Clearance::CLINICAL
+!surgeon2.specialty := 'Trauma surgery'
+!surgeon2.robotCertified := false
+
+!create nurse2 : Nurse
+!nurse2.name := 'Nurse Bila'
+!nurse2.active := true
+!nurse2.clearance := Clearance::CLINICAL
+
+!create nurse3 : Nurse
+!nurse3.name := 'Nurse Cerna'
+!nurse3.active := true
+!nurse3.clearance := Clearance::CLINICAL
+
+!create erNight : Shift
+!erNight.day := 2
+!erNight.type := ShiftType::NIGHT
+!insert (er, erNight) into WardShift
+!insert (erNight, surgeon2) into ShiftStaff
+!insert (erNight, nurse2) into ShiftStaff
+!insert (erNight, nurse3) into ShiftStaff
+
+-- Plaster room: a plain Ward that requires the specialty 'Orthopaedics'
+!create plaster : Ward
+!plaster.name := 'Plaster Room'
+!plaster.capacity := 4
+!plaster.minDayStaff := 2
+!plaster.minNightNurses := 0
+!plaster.requiredSpecialty := 'Orthopaedics'
+
+!create ortho1 : Physician
+!ortho1.name := 'Dr. Prochazka'
+!ortho1.active := true
+!ortho1.clearance := Clearance::CLINICAL
+!ortho1.specialty := 'Orthopaedics'
+
+!create nurse4 : Nurse
+!nurse4.name := 'Nurse Zelena'
+!nurse4.active := true
+!nurse4.clearance := Clearance::CLINICAL
+
+!create plasterDay : Shift
+!plasterDay.day := 3
+!plasterDay.type := ShiftType::DAY
+!insert (plaster, plasterDay) into WardShift
+!insert (plasterDay, ortho1) into ShiftStaff
+!insert (plasterDay, nurse4) into ShiftStaff
+
+-- Patient, record and access control
+!create pat1 : Patient
+!pat1.name := 'Jana Maly'
+!pat1.birthYear := 1980
+!insert (icu, pat1) into Admission
+
+!create rec1 : PatientRecord
+!rec1.requiredClearance := Clearance::CLINICAL
+!rec1.diagnosis := 'Aortic stenosis'
+!insert (pat1, rec1) into HasRecord
+!insert (rec1, surgeon1) into RecordAccess
+!insert (rec1, doc2) into RecordAccess
+
+-- Devices
+!create robot : SurgicalRobot
+!robot.name := 'da Vinci'
+!robot.operational := true
+
+!create ct : ImagingDevice
+!ct.name := 'CT-1'
+!ct.operational := true
+!ct.modality := Modality::CT
+
+-- Ternary relation 1: device booking
+!create b1 : DeviceBooking between (robot, pat1, surgeon1)
+!b1.startTime := 600
+!b1.endTime := 720
+
+-- Drugs and ternary relation 2: prescription
+!create heparin : Drug
+!heparin.name := 'Heparin'
+!heparin.stock := 20
+!heparin.reorderLevel := 10
+
+!create penicillin : Drug
+!penicillin.name := 'Penicillin'
+!penicillin.stock := 50
+!penicillin.reorderLevel := 10
+!insert (pat1, penicillin) into Allergy
+
+!create rx1 : Prescription between (doc2, pat1, heparin)
+!rx1.quantity := 5
+
+-- Audit log: a granted read by the surgeon and a refused attempt by the cleaner
+!create ev1 : AccessEvent
+!ev1.time := 100
+!ev1.action := AccessType::READ
+!ev1.granted := true
+!insert (ev1, surgeon1) into EventActor
+!insert (ev1, rec1) into EventRecord
+
+!create ev2 : AccessEvent
+!ev2.time := 105
+!ev2.action := AccessType::READ
+!ev2.granted := false
+!insert (ev2, cleaner1) into EventActor
+!insert (ev2, rec1) into EventRecord
+
+-- Operation with pre/postconditions (soil body runs under contract checking)
+!openter heparin dispense(5)
+!heparin.stock := heparin.stock - 5
+!opexit
+
+?heparin.lowStock
+?icu.occupancy
+?dayShift.nurseCount
+?nightShift.nurseCount
+?rec1.accessCount
+?cleaner1.deniedAttempts
+?cleaner1.suspicious
+check
+
+------------------------------------------------------------
+-- Part B: deliberate violations (each should be reported by `check`)
+------------------------------------------------------------
+
+-- B1: cleaner gets access to a medical record (security violation)
+!insert (rec1, cleaner1) into RecordAccess
+
+-- B2: prescribing a drug the patient is allergic to
+!create rx2 : Prescription between (doc2, pat1, penicillin)
+!rx2.quantity := 1
+
+-- B4: night shift loses its only nurse (unsafe staffing)
+!delete (nightShift, nurse1) from ShiftStaff
+
+-- B5: ward over capacity
+!create pat2 : Patient
+!pat2.name := 'Petr Maly'
+!pat2.birthYear := 1990
+!create rec2 : PatientRecord
+!rec2.requiredClearance := Clearance::BASIC
+!rec2.diagnosis := 'Observation'
+!insert (pat2, rec2) into HasRecord
+!create pat3 : Patient
+!pat3.name := 'Eva Mala'
+!pat3.birthYear := 1975
+!create rec3 : PatientRecord
+!rec3.requiredClearance := Clearance::BASIC
+!rec3.diagnosis := 'Observation'
+!insert (pat3, rec3) into HasRecord
+!insert (icu, pat2) into Admission
+!insert (icu, pat3) into Admission
+
+-- B3: overlapping booking of the same robot (for a different patient;
+-- note: USE forbids a 2nd DeviceBooking for the same (device, patient, physician)
+-- triple, i.e. the model cannot express repeat bookings of that triple)
+!insert (rec2, surgeon1) into RecordAccess
+!create b2 : DeviceBooking between (robot, pat2, surgeon1)
+!b2.startTime := 700
+!b2.endTime := 800
+
+-- B6: stock goes negative
+!heparin.stock := -1
+
+-- B7: audit log violations: a granted access for a cleaner, and a negative time
+!create ev3 : AccessEvent
+!ev3.time := -5
+!ev3.action := AccessType::WRITE
+!ev3.granted := true
+!insert (ev3, cleaner1) into EventActor
+!insert (ev3, rec1) into EventRecord
+
+check

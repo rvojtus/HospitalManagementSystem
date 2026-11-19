@@ -1,0 +1,347 @@
+-- Hospital Management System (Motol / VFN style)
+-- Time is modelled as Integer minutes since an arbitrary epoch (abstraction).
+
+model HospitalManagement
+
+enum ShiftType { DAY, NIGHT }
+
+-- Security: ordered clearance levels (NONE < BASIC < CLINICAL < ADMIN)
+enum Clearance { NONE, BASIC, CLINICAL, ADMIN }
+
+enum Modality { XRAY, CT, MRI }
+
+-- Audit log: kind of access to a patient record
+enum AccessType { READ, WRITE }
+
+------------------------------------------------------------------
+-- Organisation
+------------------------------------------------------------------
+
+class Ward
+attributes
+  name : String
+  capacity : Integer
+  minDayStaff : Integer      -- minimum people on a day shift
+  minNightNurses : Integer   -- minimum nurses on a night shift
+  requiredSpecialty : String -- specialty every shift needs ('' = none), e.g. 'Orthopaedics'
+  -- derived: current occupancy
+  occupancy : Integer derive : self.patients->size()
+end
+
+-- Emergency room: a ward that is staffed around the clock and triages arrivals
+class EmergencyRoom < Ward
+attributes
+  triageCapacity : Integer   -- patients that can be triaged at the same time
+end
+
+class Shift
+attributes
+  day : Integer              -- day number
+  type : ShiftType
+  -- derived: number of nurses on this shift
+  nurseCount : Integer derive : self.staff->select(e | e.oclIsTypeOf(Nurse))->size()
+end
+
+------------------------------------------------------------------
+-- Personnel
+------------------------------------------------------------------
+
+abstract class Employee
+attributes
+  name : String
+  active : Boolean
+  clearance : Clearance
+  -- derived (audit): number of refused access attempts, and a warning flag
+  deniedAttempts : Integer derive : self.accessEvents->select(ev | not ev.granted)->size()
+  suspicious : Boolean derive : self.deniedAttempts >= 3
+end
+
+class Physician < Employee
+attributes
+  specialty : String
+end
+
+class Surgeon < Physician
+attributes
+  robotCertified : Boolean
+end
+
+class Nurse < Employee
+end
+
+class Cleaner < Employee
+end
+
+class TechSupport < Employee
+end
+
+------------------------------------------------------------------
+-- Patients and records
+------------------------------------------------------------------
+
+class Patient
+attributes
+  name : String
+  birthYear : Integer
+end
+
+class PatientRecord
+attributes
+  requiredClearance : Clearance
+  diagnosis : String
+  -- derived (audit): how many times the record was accessed (or tried to be)
+  accessCount : Integer derive : self.accessEvents->size()
+end
+
+-- Audit log entry: one attempt of an employee to access a patient record.
+-- Time is an Integer, like in DeviceBooking.
+class AccessEvent
+attributes
+  time : Integer
+  action : AccessType
+  granted : Boolean          -- true = access allowed, false = access refused
+end
+
+------------------------------------------------------------------
+-- Equipment
+------------------------------------------------------------------
+
+abstract class Device
+attributes
+  name : String
+  operational : Boolean
+end
+
+class ImagingDevice < Device
+attributes
+  modality : Modality
+end
+
+class SurgicalRobot < Device
+end
+
+class BasicEquipment
+attributes
+  name : String
+  quantity : Integer
+end
+
+------------------------------------------------------------------
+-- Drugs
+------------------------------------------------------------------
+
+class Drug
+attributes
+  name : String
+  stock : Integer
+  reorderLevel : Integer
+  -- derived: safety flag, true when stock must be replenished
+  lowStock : Boolean derive : self.stock <= self.reorderLevel
+operations
+  dispense(q : Integer)
+end
+
+------------------------------------------------------------------
+-- Relations
+------------------------------------------------------------------
+
+-- Binary
+association WardShift between
+  Ward[1] role ward
+  Shift[*] role shifts
+end
+
+association ShiftStaff between
+  Shift[*] role shifts
+  Employee[1..*] role staff
+end
+
+association Admission between
+  Ward[0..1] role ward
+  Patient[*] role patients
+end
+
+association HasRecord between
+  Patient[1] role patient
+  PatientRecord[1] role record
+end
+
+association RecordAccess between
+  PatientRecord[*] role accessibleRecords
+  Employee[*] role authorizedStaff
+end
+
+-- Audit log: who tried to access which record
+association EventActor between
+  AccessEvent[*] role accessEvents
+  Employee[1] role actor
+end
+
+association EventRecord between
+  AccessEvent[*] role accessEvents
+  PatientRecord[1] role record
+end
+
+association WardEquipment between
+  Ward[1] role ward
+  BasicEquipment[*] role equipment
+end
+
+association Allergy between
+  Patient[*] role allergicPatients
+  Drug[*] role allergens
+end
+
+-- Ternary 1: a device is booked for a patient under the responsibility of a physician
+associationclass DeviceBooking between
+  Device[*] role device
+  Patient[*] role bookedPatient
+  Physician[*] role responsible
+attributes
+  startTime : Integer
+  endTime : Integer
+end
+
+-- Ternary 2: a physician prescribes a drug to a patient
+associationclass Prescription between
+  Physician[*] role prescriber
+  Patient[*] role treatedPatient
+  Drug[*] role drug
+attributes
+  quantity : Integer
+end
+
+------------------------------------------------------------------
+-- OCL constraints
+------------------------------------------------------------------
+
+constraints
+
+-- ===== General data validity =====
+context Ward inv capacityPositive:
+  self.capacity > 0
+
+context Ward inv notOverCapacity:
+  self.patients->size() <= self.capacity
+
+context Drug inv stockNonNegative:
+  self.stock >= 0
+
+context BasicEquipment inv quantityNonNegative:
+  self.quantity >= 0
+
+-- ===== Staffing (avoid unsafe situations) =====
+context Shift inv enoughStaffOnDayShift:
+  self.type = ShiftType::DAY implies
+    self.staff->select(e | e.active)->size() >= self.ward.minDayStaff
+
+context Shift inv enoughNursesOnNightShift:
+  self.type = ShiftType::NIGHT implies
+    self.staff->select(e | e.active and e.oclIsTypeOf(Nurse))->size()
+      >= self.ward.minNightNurses
+
+-- at least one physician on every night shift
+context Shift inv physicianOnNightShift:
+  self.type = ShiftType::NIGHT implies
+    self.staff->exists(e | e.active and e.oclIsKindOf(Physician))
+
+-- Emergency room: every shift needs an active physician, and every night shift
+-- an active surgeon (emergency surgery cannot wait until morning).
+context Shift inv emergencyRoomHasPhysician:
+  self.ward.oclIsKindOf(EmergencyRoom) implies
+    self.staff->exists(e | e.active and e.oclIsKindOf(Physician))
+
+context Shift inv emergencyRoomNightSurgeon:
+  (self.ward.oclIsKindOf(EmergencyRoom) and self.type = ShiftType::NIGHT) implies
+    self.staff->exists(e | e.active and e.oclIsKindOf(Surgeon))
+
+context EmergencyRoom inv triageCapacityPositive:
+  self.triageCapacity > 0
+
+-- General rule for specialised wards (e.g. a plaster room needs an orthopaedist):
+-- if the ward requires a specialty, every shift has an active physician with it.
+context Shift inv wardSpecialtyCovered:
+  self.ward.requiredSpecialty <> '' implies
+    self.staff->exists(e | e.active and e.oclIsKindOf(Physician)
+      and e.oclAsType(Physician).specialty = self.ward.requiredSpecialty)
+
+-- nobody works two shifts of the same day (limits fatigue)
+context Employee inv noDoubleShiftPerDay:
+  self.shifts->forAll(a, b | a <> b implies a.day <> b.day)
+
+-- ===== Security / access control =====
+-- Only active employees may hold access to a record.
+context PatientRecord inv onlyActiveStaffHaveAccess:
+  self.authorizedStaff->forAll(e | e.active)
+
+-- Clearance must be at least the record's required level (enum ordinal order).
+context PatientRecord inv clearanceSufficient:
+  self.authorizedStaff->forAll(e |
+    (self.requiredClearance = Clearance::BASIC
+       implies e.clearance <> Clearance::NONE)
+    and (self.requiredClearance = Clearance::CLINICAL
+       implies (e.clearance = Clearance::CLINICAL or e.clearance = Clearance::ADMIN))
+    and (self.requiredClearance = Clearance::ADMIN
+       implies e.clearance = Clearance::ADMIN))
+
+-- Real-world assumption: cleaners and technical support never read medical records.
+context PatientRecord inv noNonClinicalAccess:
+  self.authorizedStaff->forAll(e | not (e.oclIsTypeOf(Cleaner) or e.oclIsTypeOf(TechSupport)))
+
+-- Only physicians and nurses may hold clinical clearance.
+context Employee inv clinicalClearanceOnlyForClinicalStaff:
+  (self.clearance = Clearance::CLINICAL) implies
+    (self.oclIsKindOf(Physician) or self.oclIsKindOf(Nurse))
+
+-- ===== Audit logging =====
+context AccessEvent inv validEventTime:
+  self.time >= 0
+
+-- A granted access is never by cleaners or technical support. (Formulated so that it
+-- stays true after later changes of the access list: the log is a historical record.)
+context AccessEvent inv grantedNotForNonClinicalStaff:
+  self.granted implies
+    not (self.actor.oclIsTypeOf(Cleaner) or self.actor.oclIsTypeOf(TechSupport))
+
+-- ===== Devices and scheduling =====
+context DeviceBooking inv validInterval:
+  self.startTime < self.endTime
+
+context DeviceBooking inv deviceOperational:
+  self.device.operational
+
+-- No two bookings of the same device overlap.
+context DeviceBooking inv noOverlap:
+  DeviceBooking.allInstances()->forAll(b |
+    b <> self and b.device = self.device implies
+      (b.endTime <= self.startTime or self.endTime <= b.startTime))
+
+-- A surgical robot may only be booked under a robot-certified surgeon.
+context DeviceBooking inv robotNeedsCertifiedSurgeon:
+  self.device.oclIsTypeOf(SurgicalRobot) implies
+    (self.responsible.oclIsTypeOf(Surgeon) and self.responsible.oclAsType(Surgeon).robotCertified)
+
+-- The responsible physician must be allowed to see the patient's record.
+context DeviceBooking inv responsibleHasRecordAccess:
+  self.bookedPatient.record.authorizedStaff->includes(self.responsible)
+
+-- ===== Drugs =====
+-- Never prescribe a drug the patient is allergic to.
+context Prescription inv noAllergen:
+  not self.drug.allergicPatients->includes(self.treatedPatient)
+
+context Prescription inv quantityPositive:
+  self.quantity > 0
+
+context Prescription inv prescriberHasAccess:
+  self.treatedPatient.record.authorizedStaff->includes(self.prescriber)
+
+-- ===== Operations (pre/post) =====
+context Drug::dispense(q : Integer)
+  pre  positiveQuantity: q > 0
+  pre  enoughStock: self.stock >= q
+  post stockReduced: self.stock = self.stock@pre - q
+
+-- ===== Derivation rule (as invariant of the derived attribute) =====
+context Ward inv occupancyConsistent:
+  self.occupancy = self.patients->size()

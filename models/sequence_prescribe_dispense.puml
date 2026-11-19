@@ -1,0 +1,32 @@
+@startuml sequence_prescribe_dispense
+title Prescribing and dispensing a drug
+
+actor Physician as Doc
+participant ":HospitalSystem" as Sys
+participant ":Drug" as Drg
+actor Nurse as Nur
+
+Doc -> Sys : prescribe(patient, drug, quantity)
+
+alt not authorised, or patient allergic
+  Sys --> Doc : rejected\n<<prescriberHasAccess, noAllergen>>
+else ok
+  Sys --> Doc : Prescription created
+end
+
+Nur -> Sys : dispense(prescription)
+Sys -> Drg : dispense(q)
+note right of Drg
+  pre: q > 0 and stock >= q
+  post: stock = stock@pre - q
+end note
+
+alt stock < q
+  Drg --> Sys : precondition violated
+  Sys --> Nur : out of stock
+else enough stock
+  Drg --> Sys : ok
+  Sys --> Nur : dispensed
+end
+
+@enduml
